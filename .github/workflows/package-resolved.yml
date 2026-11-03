@@ -21,6 +21,7 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: package-resolved-${{ github.head_ref || github.ref }}
@@ -59,7 +60,7 @@ jobs:
     name: Package.resolved is current
     needs: changes
     if: needs.changes.outputs.packages == 'true'
-    runs-on: macos-15
+    runs-on: outrun-macos
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
