@@ -136,8 +136,8 @@ jobs:
   # outrun (ARK-81): two shards on two VMs. Each restores DerivedData and builds for testing (the
   # build is the same on both, so neither waits on a transfer), then runs half of FlipcashTests by
   # type, split by LPT on per-type durations (.github/outrun/app-durations.json, from a previous
-  # result bundle; .github/outrun/app-shard.py). Shard 2 also runs the UI smoke test and the
-  # quarantined case. Each shard is a command unit (app:1, app:2), and the quarantined case one of
+  # result bundle; .github/outrun/app-shard.py). Shard 1 also runs the quarantined case beside
+  # its tests, shard 2 the UI smoke test. Each shard is a command unit (app:1, app:2), and the quarantined case one of
   # its own (app:quarantined, never gating: recorded even red, so a known failure is replayed, not
   # rerun, until the app's inputs change).
   app:
@@ -180,7 +180,7 @@ jobs:
         run: .github/outrun/run lookup "app:${{ matrix.shard }}"
 
       - name: Look the quarantined case up
-        if: matrix.shard == 2
+        if: matrix.shard == 1
         id: lookq
         run: .github/outrun/run lookup "app:quarantined"
 
@@ -238,6 +238,12 @@ jobs:
             -quiet \
             COMPILER_INDEX_STORE_ENABLE=NO
 
+      # outrun (ARK-81): what DerivedData holds, to cache only what a build reuses.
+      - name: DerivedData sizes
+        if: steps.need.outputs.build == 'true' && matrix.shard == 1
+        continue-on-error: true
+        run: du -sk .derived/app/* .derived/app/Build/*/* .derived/app/SourcePackages/* 2>/dev/null | sort -n | tail -15
+
       # outrun (ARK-81): saved by shard 1 only, and only when no DerivedData of these packages
       # was restored: a warm one already holds the built packages, and the save cost 55 s.
       - name: Save app DerivedData
@@ -252,7 +258,7 @@ jobs:
         if: steps.need.outputs.build == 'true'
         id: boot
         run: |
-          if [ "${{ matrix.shard }}" = 2 ] && [ "${{ steps.lookq.outputs.run }}" = true ]; then
+          if [ "${{ matrix.shard }}" = 1 ] && [ "${{ steps.lookq.outputs.run }}" = true ]; then
             echo "q=$(xcrun simctl clone "${{ steps.sim.outputs.udid }}" outrun-quarantine)" >> "$GITHUB_OUTPUT"
           fi
           xcrun simctl boot "${{ steps.sim.outputs.udid }}" || true
@@ -262,7 +268,7 @@ jobs:
       # it runs on a clone of the simulator beside the other tests, through the .xctestrun the
       # build wrote (its own DerivedData, so the two xcodebuilds share nothing).
       - name: Start quarantined app tests beside the others
-        if: matrix.shard == 2 && steps.lookq.outputs.run == 'true'
+        if: matrix.shard == 1 && steps.lookq.outputs.run == 'true'
         run: |
           set -euo pipefail
           Q="${{ steps.boot.outputs.q }}"
@@ -313,7 +319,7 @@ jobs:
             -resultBundlePath "${{ runner.temp }}/UISmoke.xcresult"
 
       - name: Quarantined app tests
-        if: matrix.shard == 2 && steps.lookq.outputs.run == 'true'
+        if: matrix.shard == 1 && steps.lookq.outputs.run == 'true'
         id: quarantine
         continue-on-error: true
         timeout-minutes: 10
