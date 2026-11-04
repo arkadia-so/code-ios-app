@@ -1,0 +1,6 @@
+#!/bin/sh
+# outrun's CLI (ARK-81 bench), shipped gzipped so the repository's linters never read the bundle.
+set -e
+out="${RUNNER_TEMP:-/tmp}/outrun.js"
+[ -f "$out" ] || gunzip -c "$(dirname "$0")/outrun.js.gz" > "$out"
+exec bun "$out" "$@"

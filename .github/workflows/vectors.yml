@@ -25,6 +25,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      cache:
+        description: outrun's cache namespace (ARK-81 bench; a fresh one is a cold cache)
+        type: string
+        default: outrun
 
 # Only PR runs are superseded by a newer push. A push to main that cancelled its
 # predecessor would also cancel the run that seeds the DerivedData cache (caches
@@ -33,13 +38,29 @@ concurrency:
   group: vectors-${{ github.head_ref || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  OUTRUN_CACHE_URL: https://turbo-cache.arkadia.so
+  OUTRUN_CACHE_TEAM: ${{ inputs.cache || 'outrun' }}
+
 jobs:
   # ---------------------------------------------------------------- vectors --
   vectors:
-    name: Vectors
+    name: Vectors (${{ matrix.id }})
+    strategy:
+      fail-fast: false
+      matrix:
+        id: [ed25519, core]
     runs-on: outrun-macos
     timeout-minutes: 30
     steps:
+      - name: Start
+        id: start
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
 
       # FlipcashCore is swift-tools 6.1, which the image's default Xcode may
@@ -53,6 +74,17 @@ jobs:
             sudo xcode-select -s "$XCODE"
           fi
           xcodebuild -version
+          # outrun (ARK-81): the Xcode and simulator runtimes are part of every command's key.
+          echo "XCODE=$(xcodebuild -version | tr '\n' ' ')$(xcrun simctl list runtimes | grep -o 'iOS [0-9.]*' | sort -u | tr '\n' ' ')" >> "$GITHUB_ENV"
+
+      - name: Setup Bun (outrun)
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Look vectors:${{ matrix.id }} up
+        id: look
+        run: .github/outrun/run lookup "vectors:${{ matrix.id }}"
 
       # Cold, FlipcashCore vectors spent 6-10 minutes compiling grpc/nio/protobuf.
       # Both packages build into ./.derived, which holds the compiled products and
@@ -60,6 +92,7 @@ jobs:
       # manifest change refreshes it. PR runs can only read caches saved on main
       # or on their own PR ref.
       - name: Restore DerivedData
+        if: steps.look.outputs.run == 'true'
         uses: actions/cache@v4
         with:
           path: .derived
@@ -70,6 +103,7 @@ jobs:
       # Simulator model names turn over with each runner image, so pick whatever
       # iPhone is installed rather than naming one.
       - name: Pick a simulator
+        if: steps.look.outputs.run == 'true'
         id: sim
         run: |
           set -euo pipefail
@@ -77,6 +111,7 @@ jobs:
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
 
       - name: Ed25519 vectors
+        if: ${{ steps.look.outputs.run == 'true' && (matrix.id == 'ed25519') }}
         working-directory: CrossPlatformVectors
         run: |
           xcodebuild test -scheme CrossPlatformVectors-Package \
@@ -85,12 +120,17 @@ jobs:
             -quiet
 
       - name: FlipcashCore vectors
+        if: ${{ steps.look.outputs.run == 'true' && (matrix.id == 'core') }}
         working-directory: FlipcashCoreVectors
         run: |
           xcodebuild test -scheme FlipcashCoreVectors-Package \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath "$GITHUB_WORKSPACE/.derived/core" \
             -quiet
+
+      - name: Record vectors:${{ matrix.id }}
+        if: success() && steps.look.outputs.run == 'true'
+        run: .github/outrun/run record "vectors:${{ matrix.id }}" --key "${{ steps.look.outputs.key }}" --since ${{ steps.start.outputs.at }}
 
   # ------------------------------------------------------------- app build --
   app:
@@ -100,6 +140,10 @@ jobs:
     # run, which leaves nothing for a slow runner.
     timeout-minutes: 60
     steps:
+      - name: Start
+        id: start
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
 
       - name: Select the newest installed Xcode
@@ -110,10 +154,22 @@ jobs:
             sudo xcode-select -s "$XCODE"
           fi
           xcodebuild -version
+          # outrun (ARK-81): the Xcode and simulator runtimes are part of every command's key.
+          echo "XCODE=$(xcodebuild -version | tr '\n' ' ')$(xcrun simctl list runtimes | grep -o 'iOS [0-9.]*' | sort -u | tr '\n' ' ')" >> "$GITHUB_ENV"
+
+      - name: Setup Bun (outrun)
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Look app up
+        id: look
+        run: .github/outrun/run lookup "app"
 
       # Hashed before the build: afterwards .derived/ holds the SwiftPM checkouts,
       # whose Package.swift files would change the hash.
       - name: Cache key
+        if: steps.look.outputs.run == 'true'
         id: key
         run: echo "dd=app-dd-${{ runner.os }}-${{ hashFiles('**/Package.swift', '**/Package.resolved') }}" >> "$GITHUB_OUTPUT"
 
@@ -123,6 +179,7 @@ jobs:
       # what the cache saves is the built SwiftPM packages. Without it, the build
       # reached FlipcashCore after 16.6 minutes instead of 1.3.
       - name: Restore app DerivedData
+        if: steps.look.outputs.run == 'true'
         uses: actions/cache/restore@v4
         with:
           path: .derived/app
@@ -132,6 +189,7 @@ jobs:
             app-dd-${{ runner.os }}-
 
       - name: Pick a simulator
+        if: steps.look.outputs.run == 'true'
         id: sim
         run: |
           set -euo pipefail
@@ -144,6 +202,7 @@ jobs:
       # runs do not, because -quiet there reduces a failure to "Test case ... failed"
       # with no assertion text to act on. CI never reads the index store.
       - name: App build
+        if: steps.look.outputs.run == 'true'
         run: |
           xcodebuild build-for-testing -scheme Flipcash \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
@@ -153,7 +212,7 @@ jobs:
             COMPILER_INDEX_STORE_ENABLE=NO
 
       - name: Save app DerivedData
-        if: github.event_name != 'pull_request'
+        if: ${{ steps.look.outputs.run == 'true' && (github.event_name != 'pull_request') }}
         uses: actions/cache/save@v4
         with:
           path: .derived/app
@@ -162,6 +221,7 @@ jobs:
       # Booted after the build, not during it: on the 3-core runner, runs that
       # booted during the build compiled every phase 1.7-2.7x slower.
       - name: Boot the simulator
+        if: steps.look.outputs.run == 'true'
         run: |
           xcrun simctl boot "${{ steps.sim.outputs.udid }}" || true
           xcrun simctl bootstatus "${{ steps.sim.outputs.udid }}" -b
@@ -180,6 +240,7 @@ jobs:
       # failed at 60 s (runs 41647682095, 41651458792). Serial, the suite's test
       # time is about 110 s and no case takes over 2.2 s.
       - name: App tests
+        if: steps.look.outputs.run == 'true'
         run: |
           xcodebuild test-without-building -scheme Flipcash \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
@@ -197,6 +258,7 @@ jobs:
       # never sees the open panel's pixels above the bar on Xcode 26.3 (3 of 3 tries,
       # run 41674530406); it passes in about 2 s on Xcode 27.2.
       - name: Quarantined app tests
+        if: steps.look.outputs.run == 'true'
         id: quarantine
         continue-on-error: true
         timeout-minutes: 10
@@ -218,7 +280,7 @@ jobs:
       # continue-on-error would not forgive.
       - name: UI smoke tests
         id: ui
-        if: github.event_name != 'pull_request'
+        if: ${{ steps.look.outputs.run == 'true' && (github.event_name != 'pull_request') }}
         continue-on-error: true
         timeout-minutes: 15
         run: |
@@ -228,11 +290,15 @@ jobs:
             -only-testing:FlipcashUITests/MnemonicEntrySmokeTests \
             -resultBundlePath "${{ runner.temp }}/UISmoke.xcresult"
 
+      - name: Record app
+        if: success() && steps.look.outputs.run == 'true'
+        run: .github/outrun/run record app --key "${{ steps.look.outputs.key }}" --since ${{ steps.start.outputs.at }}
+
       # Swift Testing's Issue.record messages reach the result bundle and nowhere else, so a
       # failure otherwise has to be reconstructed from "Test case ... failed" lines.
       # Uploaded for the UI step too, which by design leaves the job green.
       - name: Result bundles
-        if: failure() || steps.ui.outcome == 'failure' || steps.quarantine.outcome == 'failure'
+        if: ${{ steps.look.outputs.run == 'true' && (failure() || steps.ui.outcome == 'failure' || steps.quarantine.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
           name: app-xcresult

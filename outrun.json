@@ -1,0 +1,23 @@
+{
+  "inputs": [".swift-version", ".github/workflows/vectors.yml"],
+  "env": ["XCODE"],
+  "trustedRef": "refs/heads/bench/engine",
+  "suites": [],
+  "commands": [
+    {
+      "name": "vectors:ed25519",
+      "run": "xcodebuild test -scheme CrossPlatformVectors-Package (CrossPlatformVectors)",
+      "inputs": ["CrossPlatformVectors/**"]
+    },
+    {
+      "name": "vectors:core",
+      "run": "xcodebuild test -scheme FlipcashCoreVectors-Package (FlipcashCoreVectors)",
+      "inputs": ["FlipcashCoreVectors/**", "FlipcashCore/**", "FlipcashAPI/**"]
+    },
+    {
+      "name": "app",
+      "run": "xcodebuild build-for-testing + test-without-building -scheme Flipcash (FlipcashTests, quarantined, UI smoke)",
+      "inputs": ["**", "!docs/**", "!**/*.md", "!.github/**", "!.maestro/**", "!fastlane/**", "!.claude/**", "!.well-known/**", "!TestFlight/**", "!outrun.json"]
+    }
+  ]
+}
