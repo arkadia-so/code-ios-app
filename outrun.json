@@ -1,23 +1,78 @@
 {
-  "inputs": [".swift-version", ".github/workflows/vectors.yml"],
-  "env": ["XCODE"],
+  "inputs": [
+    ".swift-version",
+    ".github/workflows/vectors.yml"
+  ],
+  "env": [
+    "XCODE"
+  ],
   "trustedRef": "refs/heads/bench/engine",
   "suites": [],
   "commands": [
     {
       "name": "vectors:ed25519",
       "run": "xcodebuild test -scheme CrossPlatformVectors-Package (CrossPlatformVectors)",
-      "inputs": ["CrossPlatformVectors/**"]
+      "inputs": [
+        "CrossPlatformVectors/**"
+      ]
     },
     {
       "name": "vectors:core",
       "run": "xcodebuild test -scheme FlipcashCoreVectors-Package (FlipcashCoreVectors)",
-      "inputs": ["FlipcashCoreVectors/**", "FlipcashCore/**", "FlipcashAPI/**"]
+      "inputs": [
+        "FlipcashCoreVectors/**",
+        "FlipcashCore/**",
+        "FlipcashAPI/**"
+      ]
     },
     {
-      "name": "app",
-      "run": "xcodebuild build-for-testing + test-without-building -scheme Flipcash (FlipcashTests, quarantined, UI smoke)",
-      "inputs": ["**", "!docs/**", "!**/*.md", "!.github/**", "!.maestro/**", "!fastlane/**", "!.claude/**", "!.well-known/**", "!TestFlight/**", "!outrun.json"]
+      "name": "app:1",
+      "run": "xcodebuild build-for-testing + test-without-building -scheme Flipcash, FlipcashTests shard 1 of 2 (LPT)",
+      "inputs": [
+        "**",
+        "!docs/**",
+        "!**/*.md",
+        "!.github/**",
+        "!.maestro/**",
+        "!fastlane/**",
+        "!.claude/**",
+        "!.well-known/**",
+        "!TestFlight/**",
+        "!outrun.json"
+      ]
+    },
+    {
+      "name": "app:2",
+      "run": "xcodebuild build-for-testing + test-without-building -scheme Flipcash, FlipcashTests shard 2 of 2 (LPT) + UI smoke",
+      "inputs": [
+        "**",
+        "!docs/**",
+        "!**/*.md",
+        "!.github/**",
+        "!.maestro/**",
+        "!fastlane/**",
+        "!.claude/**",
+        "!.well-known/**",
+        "!TestFlight/**",
+        "!outrun.json"
+      ]
+    },
+    {
+      "name": "app:quarantined",
+      "run": "xcodebuild test-without-building -only-testing FlipcashTests/AttachPanelPlacementTests/openPanel_sitsAbovePlus()",
+      "inputs": [
+        "**",
+        "!docs/**",
+        "!**/*.md",
+        "!.github/**",
+        "!.maestro/**",
+        "!fastlane/**",
+        "!.claude/**",
+        "!.well-known/**",
+        "!TestFlight/**",
+        "!outrun.json"
+      ],
+      "quarantined": true
     }
   ]
 }

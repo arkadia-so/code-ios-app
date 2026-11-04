@@ -133,12 +133,25 @@ jobs:
         run: .github/outrun/run record "vectors:${{ matrix.id }}" --key "${{ steps.look.outputs.key }}" --since ${{ steps.start.outputs.at }}
 
   # ------------------------------------------------------------- app build --
+  # outrun (ARK-81): two shards on two VMs. Each restores DerivedData and builds for testing (the
+  # build is the same on both, so neither waits on a transfer), then runs half of FlipcashTests by
+  # type, split by LPT on per-type durations (.github/outrun/app-durations.json, from a previous
+  # result bundle; .github/outrun/app-shard.py). Shard 2 also runs the UI smoke test and the
+  # quarantined case. Each shard is a command unit (app:1, app:2), and the quarantined case one of
+  # its own (app:quarantined, never gating: recorded even red, so a known failure is replayed, not
+  # rerun, until the app's inputs change).
   app:
-    name: Flipcash build and tests
+    name: Flipcash build and tests (${{ matrix.shard }})
     runs-on: outrun-macos
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     # The app build and its 1664 tests took 22 of the previous 30 on a quiet
     # run, which leaves nothing for a slow runner.
     timeout-minutes: 60
+    env:
+      QUARANTINED: FlipcashTests/AttachPanelPlacementTests/openPanel_sitsAbovePlus()
     steps:
       - name: Start
         id: start
@@ -160,26 +173,33 @@ jobs:
       - name: Setup Bun (outrun)
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
-      - name: Look app up
+      - name: Look app:${{ matrix.shard }} up
         id: look
-        run: .github/outrun/run lookup "app"
+        run: .github/outrun/run lookup "app:${{ matrix.shard }}"
+
+      - name: Look the quarantined case up
+        if: matrix.shard == 2
+        id: lookq
+        run: .github/outrun/run lookup "app:quarantined"
+
+      - name: Build needed
+        id: need
+        run: echo "build=${{ steps.look.outputs.run == 'true' || steps.lookq.outputs.run == 'true' }}" >> "$GITHUB_OUTPUT"
 
       # Hashed before the build: afterwards .derived/ holds the SwiftPM checkouts,
       # whose Package.swift files would change the hash.
       - name: Cache key
-        if: steps.look.outputs.run == 'true'
+        if: steps.need.outputs.build == 'true'
         id: key
         run: echo "dd=app-dd-${{ runner.os }}-${{ hashFiles('**/Package.swift', '**/Package.resolved') }}" >> "$GITHUB_OUTPUT"
 
-      # Restored everywhere, saved only off pull_request: a multi-GB cache per PR
-      # push would evict the main-branch seed that every PR starts from. Checkout
-      # gives every source a new mtime, so the app and test targets rebuild anyway;
-      # what the cache saves is the built SwiftPM packages. Without it, the build
-      # reached FlipcashCore after 16.6 minutes instead of 1.3.
+      # Checkout gives every source a new mtime, so the app and test targets rebuild anyway;
+      # what the cache saves is the built SwiftPM packages.
       - name: Restore app DerivedData
-        if: steps.look.outputs.run == 'true'
+        if: steps.need.outputs.build == 'true'
+        id: restore
         uses: actions/cache/restore@v4
         with:
           path: .derived/app
@@ -189,64 +209,60 @@ jobs:
             app-dd-${{ runner.os }}-
 
       - name: Pick a simulator
-        if: steps.look.outputs.run == 'true'
+        if: steps.need.outputs.build == 'true'
         id: sim
         run: |
           set -euo pipefail
           UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for r in sorted(d, reverse=True) for x in d[r] if x['name'].startswith('iPhone')))")
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
 
-      # Builds both test targets (FlipcashTests and FlipcashUITests) once for the
-      # test steps below. The build runs -quiet (unquieted it prints every compile
-      # command, which on its own pushed this job past its timeout), while the test
-      # runs do not, because -quiet there reduces a failure to "Test case ... failed"
-      # with no assertion text to act on. CI never reads the index store.
       # outrun (ARK-81, tracer part 5): xcodebuild's source-control scan runs git about 100 times
       # (status, rev-parse, describe; 4,158 stats) on every build and test. GIT_DIR pointing
       # nowhere turns it off; SwiftPM's packages are resolved first, with git.
       - name: Resolve packages
-        if: steps.look.outputs.run == 'true'
+        if: steps.need.outputs.build == 'true'
         run: |
           xcodebuild -resolvePackageDependencies -scheme Flipcash \
             -derivedDataPath "$GITHUB_WORKSPACE/.derived/app" \
-            -skipMacroValidation -quiet
+            -skipMacroValidation -skipPackageUpdates -onlyUsePackageVersionsFromResolvedFile -quiet
 
       - name: App build
-        if: steps.look.outputs.run == 'true'
+        if: steps.need.outputs.build == 'true'
         env:
           GIT_DIR: /var/empty/no-git
         run: |
           xcodebuild build-for-testing -scheme Flipcash \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath "$GITHUB_WORKSPACE/.derived/app" \
-            -skipMacroValidation \
+            -skipMacroValidation -disableAutomaticPackageResolution \
             -quiet \
             COMPILER_INDEX_STORE_ENABLE=NO
 
+      # outrun (ARK-81): saved by shard 1 only, and only when no DerivedData of these packages
+      # was restored: a warm one already holds the built packages, and the save cost 55 s.
       - name: Save app DerivedData
-        if: ${{ steps.look.outputs.run == 'true' && (github.event_name != 'pull_request') }}
+        if: ${{ steps.need.outputs.build == 'true' && matrix.shard == 1 && github.event_name != 'pull_request' && !startsWith(steps.restore.outputs.cache-matched-key, steps.key.outputs.dd) }}
         uses: actions/cache/save@v4
         with:
           path: .derived/app
           key: ${{ steps.key.outputs.dd }}-${{ github.sha }}
 
-      # Booted after the build, not during it: on the 3-core runner, runs that
-      # booted during the build compiled every phase 1.7-2.7x slower.
+      # Booted after the build, not during it: runs that booted during the build compiled slower.
       - name: Boot the simulator
-        if: steps.look.outputs.run == 'true'
+        if: steps.need.outputs.build == 'true'
         id: boot
         run: |
-          # outrun (ARK-81): a clone for the quarantined case, made while the source is shut down.
-          echo "q=$(xcrun simctl clone "${{ steps.sim.outputs.udid }}" outrun-quarantine)" >> "$GITHUB_OUTPUT"
+          if [ "${{ matrix.shard }}" = 2 ] && [ "${{ steps.lookq.outputs.run }}" = true ]; then
+            echo "q=$(xcrun simctl clone "${{ steps.sim.outputs.udid }}" outrun-quarantine)" >> "$GITHUB_OUTPUT"
+          fi
           xcrun simctl boot "${{ steps.sim.outputs.udid }}" || true
           xcrun simctl bootstatus "${{ steps.sim.outputs.udid }}" -b
 
-      # outrun (ARK-81): the quarantined case fails every time after its 90 s waits, about
-      # 5.5 min. Its verdict never gates, so it runs on a clone of the simulator, beside
-      # App tests and UI smoke tests rather than after them, through the .xctestrun
-      # the build wrote (its own DerivedData, so the two xcodebuilds share nothing).
+      # The quarantined case fails every time after its 90 s waits. Its verdict never gates, so
+      # it runs on a clone of the simulator beside the other tests, through the .xctestrun the
+      # build wrote (its own DerivedData, so the two xcodebuilds share nothing).
       - name: Start quarantined app tests beside the others
-        if: steps.look.outputs.run == 'true'
+        if: matrix.shard == 2 && steps.lookq.outputs.run == 'true'
         run: |
           set -euo pipefail
           Q="${{ steps.boot.outputs.q }}"
@@ -257,52 +273,34 @@ jobs:
             -destination 'platform=iOS Simulator,id=$Q' \
             -derivedDataPath '$GITHUB_WORKSPACE/.derived/quarantine' \
             -parallel-testing-enabled NO \
-            -only-testing:'FlipcashTests/AttachPanelPlacementTests/openPanel_sitsAbovePlus()' \
+            -only-testing:'$QUARANTINED' \
             -resultBundlePath '${{ runner.temp }}/Quarantined.xcresult' > '${{ runner.temp }}/quarantine.log' 2>&1; echo \$? > '${{ runner.temp }}/quarantine.exit'" >/dev/null 2>&1 &
 
-      # All of FlipcashTests, and any failure fails the job. That includes the
-      # app target's own vector suites -- chat drafts, link detection, and chat
-      # media -- which assert against types only the app has, so they cannot move
-      # into either package. Their fixtures are canonical and code-android-app
-      # asserts against the same ones, so a failure there is contract drift
-      # between the platforms.
-      #
-      # Serial: in parallel, Swift Testing starts all ~3,600 cases at once in the one
-      # test host, and on the 3-core runner a case can wait over 60 s for the main
-      # actor or the cooperative pool before its first line runs. That wait counts
-      # against .timeLimit and wall-clock checks, so cases that take 20 ms alone
-      # failed at 60 s (runs 41647682095, 41651458792). Serial, the suite's test
-      # time is about 110 s and no case takes over 2.2 s.
+      - name: Shard selection
+        if: steps.look.outputs.run == 'true'
+        id: shard
+        run: echo "args=$(python3 .github/outrun/app-shard.py ${{ matrix.shard }} .github/outrun/app-durations.json FlipcashTests 79)" >> "$GITHUB_OUTPUT"
+
+      # This shard's part of FlipcashTests, serial (in parallel, Swift Testing starts every case
+      # at once in the one test host and cases miss their time limits).
       - name: App tests
         if: steps.look.outputs.run == 'true'
+        env:
+          GIT_DIR: /var/empty/no-git
         run: |
+          # shellcheck disable=SC2086
           xcodebuild test-without-building -scheme Flipcash \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath "$GITHUB_WORKSPACE/.derived/app" \
             -parallel-testing-enabled NO \
-            -only-testing:FlipcashTests \
+            -only-testing:FlipcashTests ${{ steps.shard.outputs.args }} \
             -skip-testing:"$QUARANTINED" \
             -resultBundlePath "${{ runner.temp }}/AppTests.xcresult"
-        env:
-          GIT_DIR: /var/empty/no-git
-          QUARANTINED: FlipcashTests/AttachPanelPlacementTests/openPanel_sitsAbovePlus()
 
-      # Cases that fail every time on this runner's Xcode and pass locally on a newer
-      # one, run on their own so they still report without failing the job. Fix and
-      # move each back into "App tests". openPanel_sitsAbovePlus: its 90 s waitUntil
-      # never sees the open panel's pixels above the bar on Xcode 26.3 (3 of 3 tries,
-      # run 41674530406); it passes in about 2 s on Xcode 27.2.
-      # FlipcashUITests needs UI-test account access keys that live in
-      # secrets.local.xcconfig, which CI does not have, so authenticated tests skip
-      # themselves. Only the signed-out smoke test that needs no network is run. The
-      # .maestro flows all start from the login deeplink and need the same key, so
-      # they are not run. continue-on-error until it has a record of passing on a
-      # hosted simulator; XCUITest on shared runners is slow to start and flaky. The
-      # step timeout keeps a hung launch from running out the job's clock, which
-      # continue-on-error would not forgive.
+      # The signed-out smoke test that needs no network; reports, does not gate.
       - name: UI smoke tests
         id: ui
-        if: ${{ steps.look.outputs.run == 'true' && (github.event_name != 'pull_request') }}
+        if: ${{ matrix.shard == 2 && steps.look.outputs.run == 'true' && github.event_name != 'pull_request' }}
         continue-on-error: true
         timeout-minutes: 15
         env:
@@ -315,7 +313,7 @@ jobs:
             -resultBundlePath "${{ runner.temp }}/UISmoke.xcresult"
 
       - name: Quarantined app tests
-        if: steps.look.outputs.run == 'true'
+        if: matrix.shard == 2 && steps.lookq.outputs.run == 'true'
         id: quarantine
         continue-on-error: true
         timeout-minutes: 10
@@ -324,18 +322,19 @@ jobs:
           cat "${{ runner.temp }}/quarantine.log"
           exit "$(cat "${{ runner.temp }}/quarantine.exit" 2>/dev/null || echo 1)"
 
-      - name: Record app
+      - name: Record app:${{ matrix.shard }}
         if: success() && steps.look.outputs.run == 'true'
-        run: .github/outrun/run record app --key "${{ steps.look.outputs.key }}" --since ${{ steps.start.outputs.at }}
+        run: .github/outrun/run record "app:${{ matrix.shard }}" --key "${{ steps.look.outputs.key }}" --since ${{ steps.start.outputs.at }}
 
-      # Swift Testing's Issue.record messages reach the result bundle and nowhere else, so a
-      # failure otherwise has to be reconstructed from "Test case ... failed" lines.
-      # Uploaded for the UI step too, which by design leaves the job green.
+      - name: Record the quarantined case
+        if: ${{ !cancelled() && (steps.quarantine.outcome == 'success' || steps.quarantine.outcome == 'failure') }}
+        run: .github/outrun/run record "app:quarantined" --key "${{ steps.lookq.outputs.key }}" --since ${{ steps.start.outputs.at }} ${{ steps.quarantine.outcome == 'failure' && '--failed' || '' }}
+
       - name: Result bundles
-        if: ${{ steps.look.outputs.run == 'true' && (failure() || steps.ui.outcome == 'failure' || steps.quarantine.outcome == 'failure') }}
+        if: ${{ steps.need.outputs.build == 'true' && (failure() || steps.ui.outcome == 'failure' || steps.quarantine.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
-          name: app-xcresult
+          name: app-xcresult-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/AppTests.xcresult
             ${{ runner.temp }}/Quarantined.xcresult
