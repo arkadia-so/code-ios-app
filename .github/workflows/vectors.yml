@@ -193,7 +193,7 @@ jobs:
       - name: Cache key
         if: steps.need.outputs.build == 'true'
         id: key
-        run: echo "dd=app-dd2-${{ runner.os }}-${{ hashFiles('**/Package.swift', '**/Package.resolved') }}" >> "$GITHUB_OUTPUT"
+        run: echo "dd=app-dd3-${{ runner.os }}-${{ hashFiles('**/Package.swift', '**/Package.resolved') }}" >> "$GITHUB_OUTPUT"
 
       # Checkout gives every source a new mtime, so the app and test targets rebuild anyway;
       # what the cache saves is the built SwiftPM packages.
@@ -206,7 +206,7 @@ jobs:
           key: ${{ steps.key.outputs.dd }}-${{ github.sha }}
           restore-keys: |
             ${{ steps.key.outputs.dd }}-
-            app-dd2-${{ runner.os }}-
+            app-dd3-${{ runner.os }}-
             app-dd-${{ runner.os }}-
 
       - name: Pick a simulator
@@ -235,7 +235,9 @@ jobs:
         env:
           GIT_DIR: /var/empty/no-git
         run: |
-          xcodebuild build-for-testing -scheme Flipcash \
+          # v8: only the default plan's build; without -testPlan build-for-testing also builds the
+          # Sanitizers plan's Variant-TSan (4.4 GB, half the seed), which no test here runs.
+          xcodebuild build-for-testing -scheme Flipcash -testPlan AllTargets \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath "$GITHUB_WORKSPACE/.derived/app" \
             -skipMacroValidation -disableAutomaticPackageResolution \
