@@ -193,7 +193,7 @@ jobs:
       - name: Cache key
         if: steps.need.outputs.build == 'true'
         id: key
-        run: echo "dd=app-dd-${{ runner.os }}-${{ hashFiles('**/Package.swift', '**/Package.resolved') }}" >> "$GITHUB_OUTPUT"
+        run: echo "dd=app-dd2-${{ runner.os }}-${{ hashFiles('**/Package.swift', '**/Package.resolved') }}" >> "$GITHUB_OUTPUT"
 
       # Checkout gives every source a new mtime, so the app and test targets rebuild anyway;
       # what the cache saves is the built SwiftPM packages.
@@ -206,6 +206,7 @@ jobs:
           key: ${{ steps.key.outputs.dd }}-${{ github.sha }}
           restore-keys: |
             ${{ steps.key.outputs.dd }}-
+            app-dd2-${{ runner.os }}-
             app-dd-${{ runner.os }}-
 
       - name: Pick a simulator
@@ -222,6 +223,9 @@ jobs:
       - name: Resolve packages
         if: steps.need.outputs.build == 'true'
         run: |
+          # outrun (ARK-81): 4.6 of the 8.7 GB restored are Variant-TSan, the Sanitizers plan's
+          # build, which build-for-testing of the default plan never reads; the seed drops it.
+          rm -rf .derived/app/Build/Products/Variant-TSan .derived/app/Build/Intermediates.noindex/Variant-TSan
           xcodebuild -resolvePackageDependencies -scheme Flipcash \
             -derivedDataPath "$GITHUB_WORKSPACE/.derived/app" \
             -skipMacroValidation -skipPackageUpdates -onlyUsePackageVersionsFromResolvedFile -quiet
@@ -279,6 +283,7 @@ jobs:
             -destination 'platform=iOS Simulator,id=$Q' \
             -derivedDataPath '$GITHUB_WORKSPACE/.derived/quarantine' \
             -parallel-testing-enabled NO \
+            -test-iterations 1 -retry-tests-on-failure \
             -only-testing:'$QUARANTINED' \
             -resultBundlePath '${{ runner.temp }}/Quarantined.xcresult' > '${{ runner.temp }}/quarantine.log' 2>&1; echo \$? > '${{ runner.temp }}/quarantine.exit'" >/dev/null 2>&1 &
 
