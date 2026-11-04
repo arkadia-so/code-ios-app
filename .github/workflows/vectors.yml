@@ -201,8 +201,20 @@ jobs:
       # command, which on its own pushed this job past its timeout), while the test
       # runs do not, because -quiet there reduces a failure to "Test case ... failed"
       # with no assertion text to act on. CI never reads the index store.
+      # outrun (ARK-81, tracer part 5): xcodebuild's source-control scan runs git about 100 times
+      # (status, rev-parse, describe; 4,158 stats) on every build and test. GIT_DIR pointing
+      # nowhere turns it off; SwiftPM's packages are resolved first, with git.
+      - name: Resolve packages
+        if: steps.look.outputs.run == 'true'
+        run: |
+          xcodebuild -resolvePackageDependencies -scheme Flipcash \
+            -derivedDataPath "$GITHUB_WORKSPACE/.derived/app" \
+            -skipMacroValidation -quiet
+
       - name: App build
         if: steps.look.outputs.run == 'true'
+        env:
+          GIT_DIR: /var/empty/no-git
         run: |
           xcodebuild build-for-testing -scheme Flipcash \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
@@ -241,7 +253,7 @@ jobs:
           xcrun simctl boot "$Q"
           xcrun simctl bootstatus "$Q" -b
           XCTESTRUN=$(ls "$GITHUB_WORKSPACE"/.derived/app/Build/Products/*.xctestrun | head -1)
-          nohup sh -c "xcodebuild test-without-building -xctestrun '$XCTESTRUN' \
+          nohup sh -c "GIT_DIR=/var/empty/no-git xcodebuild test-without-building -xctestrun '$XCTESTRUN' \
             -destination 'platform=iOS Simulator,id=$Q' \
             -derivedDataPath '$GITHUB_WORKSPACE/.derived/quarantine' \
             -parallel-testing-enabled NO \
@@ -272,6 +284,7 @@ jobs:
             -skip-testing:"$QUARANTINED" \
             -resultBundlePath "${{ runner.temp }}/AppTests.xcresult"
         env:
+          GIT_DIR: /var/empty/no-git
           QUARANTINED: FlipcashTests/AttachPanelPlacementTests/openPanel_sitsAbovePlus()
 
       # Cases that fail every time on this runner's Xcode and pass locally on a newer
@@ -292,6 +305,8 @@ jobs:
         if: ${{ steps.look.outputs.run == 'true' && (github.event_name != 'pull_request') }}
         continue-on-error: true
         timeout-minutes: 15
+        env:
+          GIT_DIR: /var/empty/no-git
         run: |
           xcodebuild test-without-building -scheme Flipcash \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
