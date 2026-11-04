@@ -222,9 +222,31 @@ jobs:
       # booted during the build compiled every phase 1.7-2.7x slower.
       - name: Boot the simulator
         if: steps.look.outputs.run == 'true'
+        id: boot
         run: |
+          # outrun (ARK-81): a clone for the quarantined case, made while the source is shut down.
+          echo "q=$(xcrun simctl clone "${{ steps.sim.outputs.udid }}" outrun-quarantine)" >> "$GITHUB_OUTPUT"
           xcrun simctl boot "${{ steps.sim.outputs.udid }}" || true
           xcrun simctl bootstatus "${{ steps.sim.outputs.udid }}" -b
+
+      # outrun (ARK-81): the quarantined case fails every time after its 90 s waits, about
+      # 5.5 min. Its verdict never gates, so it runs on a clone of the simulator, beside
+      # App tests and UI smoke tests rather than after them, through the .xctestrun
+      # the build wrote (its own DerivedData, so the two xcodebuilds share nothing).
+      - name: Start quarantined app tests beside the others
+        if: steps.look.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          Q="${{ steps.boot.outputs.q }}"
+          xcrun simctl boot "$Q"
+          xcrun simctl bootstatus "$Q" -b
+          XCTESTRUN=$(ls "$GITHUB_WORKSPACE"/.derived/app/Build/Products/*.xctestrun | head -1)
+          nohup sh -c "xcodebuild test-without-building -xctestrun '$XCTESTRUN' \
+            -destination 'platform=iOS Simulator,id=$Q' \
+            -derivedDataPath '$GITHUB_WORKSPACE/.derived/quarantine' \
+            -parallel-testing-enabled NO \
+            -only-testing:'FlipcashTests/AttachPanelPlacementTests/openPanel_sitsAbovePlus()' \
+            -resultBundlePath '${{ runner.temp }}/Quarantined.xcresult' > '${{ runner.temp }}/quarantine.log' 2>&1; echo \$? > '${{ runner.temp }}/quarantine.exit'" >/dev/null 2>&1 &
 
       # All of FlipcashTests, and any failure fails the job. That includes the
       # app target's own vector suites -- chat drafts, link detection, and chat
@@ -257,19 +279,6 @@ jobs:
       # move each back into "App tests". openPanel_sitsAbovePlus: its 90 s waitUntil
       # never sees the open panel's pixels above the bar on Xcode 26.3 (3 of 3 tries,
       # run 41674530406); it passes in about 2 s on Xcode 27.2.
-      - name: Quarantined app tests
-        if: steps.look.outputs.run == 'true'
-        id: quarantine
-        continue-on-error: true
-        timeout-minutes: 10
-        run: |
-          xcodebuild test-without-building -scheme Flipcash \
-            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
-            -derivedDataPath "$GITHUB_WORKSPACE/.derived/app" \
-            -parallel-testing-enabled NO \
-            -only-testing:"FlipcashTests/AttachPanelPlacementTests/openPanel_sitsAbovePlus()" \
-            -resultBundlePath "${{ runner.temp }}/Quarantined.xcresult"
-
       # FlipcashUITests needs UI-test account access keys that live in
       # secrets.local.xcconfig, which CI does not have, so authenticated tests skip
       # themselves. Only the signed-out smoke test that needs no network is run. The
@@ -289,6 +298,16 @@ jobs:
             -derivedDataPath "$GITHUB_WORKSPACE/.derived/app" \
             -only-testing:FlipcashUITests/MnemonicEntrySmokeTests \
             -resultBundlePath "${{ runner.temp }}/UISmoke.xcresult"
+
+      - name: Quarantined app tests
+        if: steps.look.outputs.run == 'true'
+        id: quarantine
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          for _ in $(seq 600); do [ -f "${{ runner.temp }}/quarantine.exit" ] && break; sleep 1; done
+          cat "${{ runner.temp }}/quarantine.log"
+          exit "$(cat "${{ runner.temp }}/quarantine.exit" 2>/dev/null || echo 1)"
 
       - name: Record app
         if: success() && steps.look.outputs.run == 'true'
