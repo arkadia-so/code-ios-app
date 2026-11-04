@@ -293,7 +293,7 @@ jobs:
       - name: Shard selection
         if: steps.look.outputs.run == 'true'
         id: shard
-        run: echo "args=$(python3 .github/outrun/app-shard.py ${{ matrix.shard }} .github/outrun/app-durations.json FlipcashTests 60)" >> "$GITHUB_OUTPUT"
+        run: echo "args=$(python3 .github/outrun/app-shard.py ${{ matrix.shard }} .github/outrun/app-durations.json FlipcashTests 10)" >> "$GITHUB_OUTPUT"
 
       # This shard's part of FlipcashTests, serial (in parallel, Swift Testing starts every case
       # at once in the one test host and cases miss their time limits).
