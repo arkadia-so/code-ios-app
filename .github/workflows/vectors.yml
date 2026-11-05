@@ -43,7 +43,7 @@ permissions:
   id-token: write
 
 env:
-  OUTRUN_CACHE_URL: https://turbo-cache.arkadia.so
+  OUTRUN_CACHE_URL: https://cache.outrun.sh
   OUTRUN_CACHE_TEAM: ${{ inputs.cache || 'outrun' }}
 
 jobs:
