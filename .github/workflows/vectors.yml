@@ -77,14 +77,11 @@ jobs:
           # outrun (ARK-81): the Xcode and simulator runtimes are part of every command's key.
           echo "XCODE=$(xcodebuild -version | tr '\n' ' ')$(xcrun simctl list runtimes | grep -o 'iOS [0-9.]*' | sort -u | tr '\n' ' ')" >> "$GITHUB_ENV"
 
-      - name: Setup Bun (outrun)
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: latest
+      - uses: arkadia-so/outrun@v1
 
       - name: Look vectors:${{ matrix.id }} up
         id: look
-        run: .github/outrun/run lookup "vectors:${{ matrix.id }}"
+        run: outrun lookup "vectors:${{ matrix.id }}"
 
       # Cold, FlipcashCore vectors spent 6-10 minutes compiling grpc/nio/protobuf.
       # Both packages build into ./.derived, which holds the compiled products and
@@ -130,7 +127,7 @@ jobs:
 
       - name: Record vectors:${{ matrix.id }}
         if: success() && steps.look.outputs.run == 'true'
-        run: .github/outrun/run record "vectors:${{ matrix.id }}" --key "${{ steps.look.outputs.key }}" --since ${{ steps.start.outputs.at }}
+        run: outrun record "vectors:${{ matrix.id }}" --key "${{ steps.look.outputs.key }}" --since ${{ steps.start.outputs.at }}
 
   # ------------------------------------------------------------- app build --
   # outrun (ARK-81): two shards on two VMs. Each restores DerivedData and builds for testing (the
@@ -170,19 +167,16 @@ jobs:
           # outrun (ARK-81): the Xcode and simulator runtimes are part of every command's key.
           echo "XCODE=$(xcodebuild -version | tr '\n' ' ')$(xcrun simctl list runtimes | grep -o 'iOS [0-9.]*' | sort -u | tr '\n' ' ')" >> "$GITHUB_ENV"
 
-      - name: Setup Bun (outrun)
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.4.4
+      - uses: arkadia-so/outrun@v1
 
       - name: Look app:${{ matrix.shard }} up
         id: look
-        run: .github/outrun/run lookup "app:${{ matrix.shard }}"
+        run: outrun lookup "app:${{ matrix.shard }}"
 
       - name: Look the quarantined case up
         if: matrix.shard == 1
         id: lookq
-        run: .github/outrun/run lookup "app:quarantined"
+        run: outrun lookup "app:quarantined"
 
       - name: Build needed
         id: need
@@ -338,11 +332,11 @@ jobs:
 
       - name: Record app:${{ matrix.shard }}
         if: success() && steps.look.outputs.run == 'true'
-        run: .github/outrun/run record "app:${{ matrix.shard }}" --key "${{ steps.look.outputs.key }}" --since ${{ steps.start.outputs.at }}
+        run: outrun record "app:${{ matrix.shard }}" --key "${{ steps.look.outputs.key }}" --since ${{ steps.start.outputs.at }}
 
       - name: Record the quarantined case
         if: ${{ !cancelled() && (steps.quarantine.outcome == 'success' || steps.quarantine.outcome == 'failure') }}
-        run: .github/outrun/run record "app:quarantined" --key "${{ steps.lookq.outputs.key }}" --since ${{ steps.start.outputs.at }} ${{ steps.quarantine.outcome == 'failure' && '--failed' || '' }}
+        run: outrun record "app:quarantined" --key "${{ steps.lookq.outputs.key }}" --since ${{ steps.start.outputs.at }} ${{ steps.quarantine.outcome == 'failure' && '--failed' || '' }}
 
       - name: Result bundles
         if: ${{ steps.need.outputs.build == 'true' && (failure() || steps.ui.outcome == 'failure' || steps.quarantine.outcome == 'failure') }}
