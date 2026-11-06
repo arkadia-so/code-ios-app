@@ -6,7 +6,7 @@
   "env": [
     "XCODE"
   ],
-  "trustedRef": "refs/heads/bench/engine",
+  "trustedRef": "refs/heads/main",
   "suites": [],
   "commands": [
     {
