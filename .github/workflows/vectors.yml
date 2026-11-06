@@ -187,7 +187,9 @@ jobs:
       - name: Cache key
         if: steps.need.outputs.build == 'true'
         id: key
-        run: echo "dd=app-dd3-${{ runner.os }}-${{ hashFiles('**/Package.swift', '**/Package.resolved') }}" >> "$GITHUB_OUTPUT"
+        # ARK-81 bench/ccache: a key of its own, since this DerivedData also holds Xcode's
+        # compilation cache (.derived/app/CompilationCache.noindex).
+        run: echo "dd=app-dd3cas-${{ runner.os }}-${{ hashFiles('**/Package.swift', '**/Package.resolved') }}" >> "$GITHUB_OUTPUT"
 
       # Checkout gives every source a new mtime, so the app and test targets rebuild anyway;
       # what the cache saves is the built SwiftPM packages.
@@ -200,6 +202,7 @@ jobs:
           key: ${{ steps.key.outputs.dd }}-${{ github.sha }}
           restore-keys: |
             ${{ steps.key.outputs.dd }}-
+            app-dd3cas-${{ runner.os }}-
             app-dd3-${{ runner.os }}-
             app-dd-${{ runner.os }}-
 
@@ -231,12 +234,15 @@ jobs:
         run: |
           # v8: only the default plan's build; without -testPlan build-for-testing also builds the
           # Sanitizers plan's Variant-TSan (4.4 GB, half the seed), which no test here runs.
+          # ARK-81 bench/ccache: Xcode's compilation cache, keyed by content, not mtimes, so the
+          # recompiles after checkout's new mtimes are replayed from the restored DerivedData.
           xcodebuild build-for-testing -scheme Flipcash -testPlan AllTargets \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath "$GITHUB_WORKSPACE/.derived/app" \
             -skipMacroValidation -disableAutomaticPackageResolution \
             -quiet \
-            COMPILER_INDEX_STORE_ENABLE=NO
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            COMPILATION_CACHE_ENABLE_CACHING=YES
 
       # outrun (ARK-81): what DerivedData holds, to cache only what a build reuses.
       - name: DerivedData sizes
